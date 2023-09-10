@@ -29,6 +29,7 @@ use errno::errno;
 use std::os::raw::{c_int, c_ulong};
 use clap::Parser;
 use num_format::SystemLocale;
+use std::fs;
 
 #[allow(non_camel_case_types)]
 #[repr(C)]
@@ -73,6 +74,7 @@ struct Blockinfo
 {
     crc: u64,
     block_number_plus_one: u64,
+    file_index: usize,
 }
 
 #[derive(Parser)]
@@ -86,6 +88,12 @@ struct CliArgs
     path: std::path::PathBuf,
 }
 
+struct FileInfo
+{
+    path: String,
+    full_blocks: u64,
+}
+
 fn main() -> std::io::Result<()>
 {
     let args = CliArgs::parse();
@@ -94,73 +102,120 @@ fn main() -> std::io::Result<()>
 
     let locale = SystemLocale::default().unwrap();
 
-    let mut array: [u8; 4096] =  [0; 4096];
 
-    let file_path: String = args.path.into_os_string().into_string().unwrap();
+    let (file_list, total_full_blocks) = build_file_list(args.path);
 
-    let file = File::open(&file_path)?;
+    let total_full_blocks_formatted = total_full_blocks.to_formatted_string(&locale);
+    println!("block count: {}", total_full_blocks_formatted);
 
-    let file_size: u64 = file.metadata().unwrap().len();
-    let file_size_formatted = file_size.to_formatted_string(&locale);
-    println!("file size: {} Bytes", file_size_formatted);
+    let total_full_blocks_usize: usize = usize::try_from(total_full_blocks).unwrap();
+    let mut hashes: Vec<Blockinfo> = vec![Blockinfo {crc: 0, block_number_plus_one: 0, file_index: 0}; total_full_blocks_usize];
 
-    let block_count: u64 = file_size / 4096 + 1;
-    let block_count_usize: usize = usize::try_from(block_count).unwrap();
-    let block_count_formatted = block_count.to_formatted_string(&locale);
-    println!("block count: {}", block_count_formatted);
-
-    let mut hashes: Vec<Blockinfo> = vec![Blockinfo {crc: 0, block_number_plus_one: 0}; block_count_usize];
-
-    let mut buf_reader = BufReader::new(&file);
+    let mut buf: [u8; 4096] =  [0; 4096];
 
     let mut matches: u64 = 0;
     let mut total_matchsize: u64 = 0;
 
-    let mut block_number: u64 = 0;
-    let mut skip_match_check: u64 = 0;
-
     let crc = Crc::<u64>::new(&CRC_64_ECMA_182);
 
-    while block_number < block_count
+    for (file_index, file_info) in file_list.iter().enumerate()
     {
-        buf_reader.read(&mut array[..])?;
+        println!("processing file {} having {} full blocks", file_info.path, file_info.full_blocks);
 
-        let mut digest = crc.digest();
+        let file = File::open(&file_info.path)?;
+        let mut buf_reader = BufReader::new(&file);
 
-        digest.update(&array);
-        let crc_result: u64 = digest.finalize();
-        if crc_result != 0
+        let mut block_number: u64 = 0;
+        let mut skip_match_check: u64 = 0;
+        let block_count: u64 = file_info.full_blocks;
+
+        while block_number <= block_count
         {
-            let hash_index: usize = usize::try_from(crc_result % block_count).unwrap();
+            buf_reader.read(&mut buf[..])?;
 
-            if skip_match_check > 0
-            {
-                skip_match_check -= 1;
-            }
-            else
-            {
-                let hash_old: u64 = hashes[hash_index].crc;
+            let mut digest = crc.digest();
 
-                if hashes[hash_index].block_number_plus_one > 0 && hash_old == crc_result
+            digest.update(&buf);
+            let crc_result: u64 = digest.finalize();
+            if crc_result != 0
+            {
+                let hash_index: usize = usize::try_from(crc_result % block_count).unwrap();
+
+                if skip_match_check > 0
                 {
-                    let block_number_keep = hashes[hash_index].block_number_plus_one - 1;
-                    let (matched_blocks, matched_blocks_behind) = try_dedupe_match(&file_path, block_number_keep, &file_path, block_number, args.simulate);
-                    if matched_blocks > 0
+                    skip_match_check -= 1;
+                }
+                else
+                {
+                    let hash_old: u64 = hashes[hash_index].crc;
+
+                    if hashes[hash_index].block_number_plus_one > 0 && hash_old == crc_result
                     {
-                        matches += 1;
-                        total_matchsize += matched_blocks;
-                        skip_match_check = matched_blocks_behind;
+                        let matched_block_info: &Blockinfo = &hashes[hash_index];
+                        let matched_file_info: &FileInfo = &file_list[matched_block_info.file_index];
+
+                        let file_path_keep: &String = &matched_file_info.path;
+                        let block_number_keep = matched_block_info.block_number_plus_one - 1;
+
+                        let (matched_blocks, matched_blocks_behind) = try_dedupe_match(file_path_keep, block_number_keep, &file_info.path, block_number, args.simulate);
+                        if matched_blocks > 0
+                        {
+                            matches += 1;
+                            total_matchsize += matched_blocks;
+                            skip_match_check = matched_blocks_behind;
+                        }
                     }
                 }
-            }
 
-            hashes[hash_index].crc = crc_result;
-            hashes[hash_index].block_number_plus_one = block_number+1;
+                hashes[hash_index].crc = crc_result;
+                hashes[hash_index].block_number_plus_one = block_number+1;
+                hashes[hash_index].file_index = file_index;
+            }
+            block_number += 1;
         }
-        block_number += 1;
     }
     println!("found {} matches for a total of {} matching blocks", matches, total_matchsize);
     Ok(())
+}
+
+
+fn build_file_list(path: std::path::PathBuf) -> (Vec<FileInfo>, u64)
+{
+    let mut file_list: Vec<FileInfo> = Vec::new();
+    let mut total_full_blocks: u64 = 0;
+
+    total_full_blocks += build_file_list_recurse(path, &mut file_list);
+
+    return (file_list, total_full_blocks);
+}
+
+fn build_file_list_recurse(path: std::path::PathBuf, file_list: &mut Vec<FileInfo>) -> u64
+{
+    let path_string: String = path.into_os_string().into_string().unwrap();
+
+    let metadata = fs::metadata(&path_string).unwrap();
+
+    if metadata.file_type().is_file()
+    {
+        let full_blocks = metadata.len() / 4096;
+        if full_blocks == 0
+        {
+            return 0;
+        }
+
+        let info: FileInfo = FileInfo { path: path_string, full_blocks: full_blocks };
+
+        file_list.push(info);
+        return full_blocks;
+    }
+
+    let mut full_blocks: u64 = 0;
+
+    for entry in fs::read_dir(path_string).unwrap()
+    {
+        full_blocks += build_file_list_recurse(entry.unwrap().path(), file_list);
+    }
+    return full_blocks;
 }
 
 
