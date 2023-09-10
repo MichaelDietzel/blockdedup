@@ -23,10 +23,12 @@ use std::io::BufReader;
 use std::io::SeekFrom;
 use std::io::prelude::*;
 use crc::{Crc, CRC_64_ECMA_182};
+use num_format::ToFormattedString;
 use std::os::unix::io::{RawFd, AsRawFd};
 use errno::errno;
 use std::os::raw::{c_int, c_ulong};
 use clap::Parser;
+use num_format::SystemLocale;
 
 #[allow(non_camel_case_types)]
 #[repr(C)]
@@ -88,8 +90,9 @@ fn main() -> std::io::Result<()>
 {
     let args = CliArgs::parse();
 
-
     println!("starting blockdedupe");
+
+    let locale = SystemLocale::default().unwrap();
 
     let mut array: [u8; 4096] =  [0; 4096];
 
@@ -98,11 +101,13 @@ fn main() -> std::io::Result<()>
     let file = File::open(&file_path)?;
 
     let file_size: u64 = file.metadata().unwrap().len();
-    println!("file size: {}", file_size);
+    let file_size_formatted = file_size.to_formatted_string(&locale);
+    println!("file size: {} Bytes", file_size_formatted);
 
     let block_count: u64 = file_size / 4096 + 1;
     let block_count_usize: usize = usize::try_from(block_count).unwrap();
-    println!("block count: {}", block_count);
+    let block_count_formatted = block_count.to_formatted_string(&locale);
+    println!("block count: {}", block_count_formatted);
 
     let mut hashes: Vec<Blockinfo> = vec![Blockinfo {crc: 0, block_number_plus_one: 0}; block_count_usize];
 
@@ -138,67 +143,13 @@ fn main() -> std::io::Result<()>
 
                 if hashes[hash_index].block_number_plus_one > 0 && hash_old == crc_result
                 {
-                    let block_number_old = hashes[hash_index].block_number_plus_one - 1;
-                    let matchlen: u64 = check_match(&file_path, block_number_old, block_number, block_count-1)?;
-                    println!("found match for block #{} at block #{}. Matchlen: {} blocks.", block_number, block_number_old, matchlen);
-                    if matchlen > 0
+                    let block_number_keep = hashes[hash_index].block_number_plus_one - 1;
+                    let matched_blocks : u64= try_dedupe_match(&file_path, block_number_keep, &file_path, block_number, args.simulate);
+                    if matched_blocks > 0
                     {
                         matches += 1;
-                        total_matchsize += matchlen;
-                        skip_match_check = matchlen - 1;
-
-                        if matchlen >= 16
-                        {
-
-                            if !args.simulate
-                            {
-                                let file_src = File::open(&file_path)?;
-                                let src_fd: RawFd = file_src.as_raw_fd();
-                                let file_dest = File::options().write(true).open(&file_path)?;
-                                let dest_fd: RawFd = file_dest.as_raw_fd();
-                                let dest_fd_i64: i64 = dest_fd as i64;
-
-                                let mut dedup_request: dedup = dedup
-                                {
-                                    args: file_dedupe_range
-                                    {
-                                        src_offset: block_number_old*4096,
-                                        src_length: matchlen*4096,
-                                        dest_count: 1,
-                                        reserved1: 0,
-                                        reserved2: 0,
-                                    },
-                                    info: file_dedupe_range_info
-                                    {
-                                        dest_fd: dest_fd_i64,
-                                        dest_offset: block_number*4096,
-                                        bytes_deduped: 0,
-                                        status: 0,
-                                        reserved: 0,
-                                    },
-                                };
-                                let req = &mut dedup_request;
-
-                                let result: i32;
-                                unsafe
-                                {
-                                    result = ioctl(src_fd, FIDEDUPERANGE, req as *mut _);
-                                }
-                                if result != 0
-                                {
-                                    let errno_whatever = errno();
-                                    let errno_i32: i32 = errno_whatever.0;
-                                    println!("dedup error: ({}) {}", errno_i32, errno_whatever);
-                                    panic!("aborting");
-                                }
-                                else
-                                {
-                                    println!("dedup success!");
-                                    println!("bytes_deduped {}", dedup_request.info.bytes_deduped);
-                                    println!("status {}", dedup_request.info.status);
-                                }
-                            }
-                        }
+                        total_matchsize += matched_blocks;
+                        skip_match_check = matched_blocks - 1;
                     }
                 }
             }
@@ -212,118 +163,216 @@ fn main() -> std::io::Result<()>
     Ok(())
 }
 
-fn check_match(file_path: &String, block_old: u64, block_new: u64, full_block_count: u64) -> std::io::Result<u64>
+
+fn try_dedupe_match(file_path_keep: &String, block_offset_keep: u64, file_path_dedup: &String, block_offset_dedup: u64, simulate: bool) -> u64
 {
-    let file_old = File::open(&file_path)?;
-    let file_new = File::open(&file_path)?;
+    let file_keep = File::open(&file_path_keep).unwrap();
+    let file_dedup = File::open(&file_path_dedup).unwrap();
 
-    let mut buf_old: [u8; 4096] = [0; 4096];
-    let mut buf_new: [u8; 4096] = [0; 4096];
+    let mut buf_keep: [u8; 4096] = [0; 4096];
+    let mut buf_dedupe: [u8; 4096] = [0; 4096];
 
-    let mut reader_old = BufReader::new(file_old);
-    let mut reader_new = BufReader::new(file_new);
+    let file_size_keep: u64 = file_keep.metadata().unwrap().len();
+    let file_size_dedup: u64 = file_dedup.metadata().unwrap().len();
 
-    reader_old.seek(SeekFrom::Start(block_old * 4096))?;
-    reader_old.read(&mut buf_old[..])?;
+    let mut reader_keep: BufReader<File> = BufReader::new(file_keep);
+    let mut reader_dedup: BufReader<File> = BufReader::new(file_dedup);
 
-    reader_new.seek(SeekFrom::Start(block_new * 4096))?;
-    reader_new.read(&mut buf_new[..])?;
+    reader_keep.seek(SeekFrom::Start(block_offset_keep * 4096)).unwrap();
+    reader_keep.read(&mut buf_keep[..]).unwrap();
+
+    reader_dedup.seek(SeekFrom::Start(block_offset_dedup * 4096)).unwrap();
+    reader_dedup.read(&mut buf_dedupe[..]).unwrap();
 
     let crc = Crc::<u64>::new(&CRC_64_ECMA_182);
 
-    if buf_old != buf_new
+    if buf_keep != buf_dedupe
     {
-        let mut digest_old = crc.digest();
-        digest_old.update(&buf_old);
-        let _crc_old: u64 = digest_old.finalize();
+        if cfg!(debug_assertions)
+        {
+            let mut digest_old = crc.digest();
+            digest_old.update(&buf_keep);
+            let _crc_old: u64 = digest_old.finalize();
 
-        let mut digest_new = crc.digest();
-        digest_new.update(&buf_new);
-        let _crc_new: u64 = digest_new.finalize();
-
-
+            let mut digest_new = crc.digest();
+            digest_new.update(&buf_dedupe);
+            let _crc_new: u64 = digest_new.finalize();
+        }
+        println!("found matching crc for block #{} at block #{}", block_offset_dedup, block_offset_keep);
         println!("match could not be confirmed when reading real data");
-        return Ok(0);
+        return 0;
     }
 
-    let mut blocks_before: u64 = 0;
+    let blocks_before: u64 = find_matching_blocks_before(file_path_keep == file_path_dedup, &mut reader_keep, block_offset_keep, &mut reader_dedup, block_offset_dedup);
 
-    let matchlen_max: u64 = block_new-block_old; //in blocks
+    let full_blocks_keep: u64 = file_size_keep / 4096;
+    let full_blocks_dedup: u64 = file_size_dedup / 4096;
 
-    //match blocks before the first matching block found by its hash. only relevant in case of a hash collisions
-    /*
-    TODO: this cannot be used currently because the function calling this relies on the match starting at the passed position.
-    let mut max_blocks_before: u64 = matchlen_max;
-    if max_blocks_before > block_old-1
+    let blocks_behind: u64 = find_matching_blocks_behind(file_path_keep == file_path_dedup, &mut reader_keep, block_offset_keep, full_blocks_keep, &mut reader_dedup, block_offset_dedup, full_blocks_dedup, blocks_before);
+
+    let blocks_dedupe_count: u64 = blocks_before + 1 + blocks_behind;
+
+    println!("found match for block #{} at block #{}. Matchlen: {} blocks.", block_offset_dedup, block_offset_keep, blocks_dedupe_count);
+
+    if !simulate && blocks_dedupe_count >= 16
     {
-        max_blocks_before = block_old-1;
+        do_dedupe(file_path_keep, block_offset_keep-blocks_before, file_path_dedup, block_offset_dedup-blocks_before, blocks_dedupe_count);
     }
 
-    for block_offset in (1..max_blocks_before).rev()
+    return blocks_dedupe_count;
+
+}
+
+fn find_matching_blocks_before(keep_equals_dedup: bool, reader_keep: &mut BufReader<File>, block_offset_keep: u64, reader_dedup: &mut BufReader<File>, block_offset_dedup: u64) -> u64
+{
+    let mut buf_keep: [u8; 4096] = [0; 4096];
+    let mut buf_dedupe: [u8; 4096] = [0; 4096];
+
+    let mut max_blocks_before: u64;
+    if block_offset_keep < block_offset_dedup
     {
-        reader_old.seek(SeekFrom::Start((block_old - block_offset) * 4096))?;
-        reader_old.read(&mut buf_old[..])?;
+        max_blocks_before = block_offset_keep;
+    }
+    else
+    {
+        max_blocks_before = block_offset_dedup;
+    }
+    if keep_equals_dedup
+    {
+        assert!(block_offset_keep < block_offset_dedup);
+        let tmp: u64 = block_offset_dedup - block_offset_keep;
+
+        if tmp < max_blocks_before
+        {
+            max_blocks_before = tmp;
+        }
+    }
+
+    let crc = Crc::<u64>::new(&CRC_64_ECMA_182);
+
+    for block_offset in 1..max_blocks_before
+    {
+        reader_keep.seek(SeekFrom::Start((block_offset_keep - block_offset) * 4096)).unwrap();
+        reader_keep.read(&mut buf_keep[..]).unwrap();
 
         let mut digest = crc.digest();
-        digest.update(&buf_old);
+        digest.update(&buf_keep);
         let crc_result: u64 = digest.finalize();
         if crc_result == 0
         {
-            break;
+            return block_offset-1; //do not attempt to match blocks that are completely zero. they could (and probably should) be holes.
         }
 
-        reader_new.seek(SeekFrom::Start((block_new - block_offset) * 4096))?;
-        reader_new.read(&mut buf_new[..])?;
+        reader_dedup.seek(SeekFrom::Start((block_offset_dedup - block_offset) * 4096)).unwrap();
+        reader_dedup.read(&mut buf_dedupe[..]).unwrap();
 
-        if buf_old == buf_new
+        if buf_keep != buf_dedupe
         {
-            blocks_before = block_offset;
+            return block_offset-1;
         }
-        else
-        {
-            break;
-        }
-    }*/
-
-
-    //find additional matching blocks after the matching block found by its hash.
-    let mut blocks_after: u64 = 0;
-
-    reader_old.seek(SeekFrom::Start((block_old + 1) * 4096))?;
-    reader_new.seek(SeekFrom::Start((block_new + 1)* 4096))?;
-
-    let mut max_blocks_after: u64 = matchlen_max-blocks_before;
-    let remaining_blocks: u64 = full_block_count - block_new;
-    if max_blocks_after > remaining_blocks
-    {
-        max_blocks_after = remaining_blocks;
     }
 
+    return max_blocks_before;
+}
 
-    for block_offset in 1..(max_blocks_after)
+
+fn find_matching_blocks_behind(keep_equals_dedup: bool, reader_keep: &mut BufReader<File>, block_offset_keep: u64, full_blocks_keep: u64, reader_dedup: &mut BufReader<File>, block_offset_dedup: u64, full_blocks_dedup: u64, matching_before: u64) -> u64
+{
+    let mut buf_keep: [u8; 4096] = [0; 4096];
+    let mut buf_dedup: [u8; 4096] = [0; 4096];
+
+    let mut max_blocks_behind: u64;
+    if full_blocks_keep - block_offset_keep < full_blocks_dedup - block_offset_dedup
     {
-        reader_old.read(&mut buf_old[..])?;
+        max_blocks_behind = full_blocks_keep - block_offset_keep;
+    }
+    else
+    {
+        max_blocks_behind = full_blocks_dedup - block_offset_dedup;
+    }
+    if keep_equals_dedup
+    {
+        assert!(block_offset_keep < block_offset_dedup);
+        let tmp: u64 = block_offset_dedup - block_offset_keep - matching_before;
+
+        if tmp < max_blocks_behind
+        {
+            max_blocks_behind = tmp;
+        }
+    }
+
+    reader_keep.seek(SeekFrom::Start((block_offset_keep + 1) * 4096)).unwrap();
+    reader_dedup.seek(SeekFrom::Start((block_offset_dedup + 1)* 4096)).unwrap();
+
+    let crc = Crc::<u64>::new(&CRC_64_ECMA_182);
+
+    for block_offset in 1..max_blocks_behind
+    {
+        reader_keep.read(&mut buf_keep[..]).unwrap();
 
         let mut digest = crc.digest();
-        digest.update(&buf_old);
+        digest.update(&buf_keep);
         let crc_result: u64 = digest.finalize();
         if crc_result == 0
         {
-            break;
+            return block_offset - 1;
         }
 
-        reader_new.read(&mut buf_new[..])?;
+        reader_dedup.read(&mut buf_dedup[..]).unwrap();
 
-        if buf_old == buf_new
+        if buf_keep != buf_dedup
         {
-            blocks_after = block_offset;
-        }
-        else
-        {
-            break;
+            return block_offset - 1;
         }
     }
+    return max_blocks_behind;
+}
 
-    return Ok(blocks_before + 1 + blocks_after);
+fn do_dedupe(file_path_keep: &String, block_offset_keep: u64, file_path_dedup: &String, block_offset_dedup: u64, blocks_dedup_count : u64)
+{
+    let file_keep = File::open(&file_path_keep).unwrap();
+    let fd_keep: RawFd = file_keep.as_raw_fd();
+    let file_dedup = File::options().write(true).open(&file_path_dedup).unwrap();
+    let fd_dedup: RawFd = file_dedup.as_raw_fd();
+    let fd_dedup_i64: i64 = fd_dedup as i64;
 
+    let mut dedup_request: dedup = dedup
+    {
+        args: file_dedupe_range
+        {
+            src_offset: block_offset_keep*4096,
+            src_length: blocks_dedup_count*4096,
+            dest_count: 1,
+            reserved1: 0,
+            reserved2: 0,
+        },
+        info: file_dedupe_range_info
+        {
+            dest_fd: fd_dedup_i64,
+            dest_offset: block_offset_dedup*4096,
+            bytes_deduped: 0,
+            status: 0,
+            reserved: 0,
+        },
+    };
+    let req = &mut dedup_request;
+
+    let result: i32;
+    unsafe
+    {
+        result = ioctl(fd_keep, FIDEDUPERANGE, req as *mut _);
+    }
+    if result != 0
+    {
+        let errno_whatever = errno();
+        let errno_i32: i32 = errno_whatever.0;
+        println!("dedup error: ({}) {}", errno_i32, errno_whatever);
+        panic!("aborting");
+    }
+    else
+    {
+        println!("dedup success!");
+        println!("bytes_deduped {}", dedup_request.info.bytes_deduped);
+        println!("status {}", dedup_request.info.status);
+    }
 }
