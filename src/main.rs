@@ -144,12 +144,12 @@ fn main() -> std::io::Result<()>
                 if hashes[hash_index].block_number_plus_one > 0 && hash_old == crc_result
                 {
                     let block_number_keep = hashes[hash_index].block_number_plus_one - 1;
-                    let matched_blocks : u64= try_dedupe_match(&file_path, block_number_keep, &file_path, block_number, args.simulate);
+                    let (matched_blocks, matched_blocks_behind) = try_dedupe_match(&file_path, block_number_keep, &file_path, block_number, args.simulate);
                     if matched_blocks > 0
                     {
                         matches += 1;
                         total_matchsize += matched_blocks;
-                        skip_match_check = matched_blocks - 1;
+                        skip_match_check = matched_blocks_behind;
                     }
                 }
             }
@@ -164,7 +164,7 @@ fn main() -> std::io::Result<()>
 }
 
 
-fn try_dedupe_match(file_path_keep: &String, block_offset_keep: u64, file_path_dedup: &String, block_offset_dedup: u64, simulate: bool) -> u64
+fn try_dedupe_match(file_path_keep: &String, block_offset_keep: u64, file_path_dedup: &String, block_offset_dedup: u64, simulate: bool) -> (u64, u64)
 {
     let file_keep = File::open(&file_path_keep).unwrap();
     let file_dedup = File::open(&file_path_dedup).unwrap();
@@ -200,7 +200,7 @@ fn try_dedupe_match(file_path_keep: &String, block_offset_keep: u64, file_path_d
         }
         println!("found matching crc for block #{} at block #{}", block_offset_dedup, block_offset_keep);
         println!("match could not be confirmed when reading real data");
-        return 0;
+        return (0, 0);
     }
 
     let blocks_before: u64 = find_matching_blocks_before(file_path_keep == file_path_dedup, &mut reader_keep, block_offset_keep, &mut reader_dedup, block_offset_dedup);
@@ -216,10 +216,10 @@ fn try_dedupe_match(file_path_keep: &String, block_offset_keep: u64, file_path_d
 
     if !simulate && blocks_dedupe_count >= 16
     {
-        do_dedupe(file_path_keep, block_offset_keep-blocks_before, file_path_dedup, block_offset_dedup-blocks_before, blocks_dedupe_count);
+        do_dedup(file_path_keep, block_offset_keep-blocks_before, file_path_dedup, block_offset_dedup-blocks_before, blocks_dedupe_count);
     }
 
-    return blocks_dedupe_count;
+    return (blocks_dedupe_count, blocks_behind);
 
 }
 
@@ -328,7 +328,7 @@ fn find_matching_blocks_behind(keep_equals_dedup: bool, reader_keep: &mut BufRea
     return max_blocks_behind;
 }
 
-fn do_dedupe(file_path_keep: &String, block_offset_keep: u64, file_path_dedup: &String, block_offset_dedup: u64, blocks_dedup_count : u64)
+fn do_dedup(file_path_keep: &String, block_offset_keep: u64, file_path_dedup: &String, block_offset_dedup: u64, blocks_dedup_count : u64)
 {
     let file_keep = File::open(&file_path_keep).unwrap();
     let fd_keep: RawFd = file_keep.as_raw_fd();
