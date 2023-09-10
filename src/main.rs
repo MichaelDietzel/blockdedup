@@ -26,6 +26,7 @@ use crc::{Crc, CRC_64_ECMA_182};
 use std::os::unix::io::{RawFd, AsRawFd};
 use errno::errno;
 use std::os::raw::{c_int, c_ulong};
+use clap::Parser;
 
 #[allow(non_camel_case_types)]
 #[repr(C)]
@@ -72,13 +73,27 @@ struct Blockinfo
     block_number_plus_one: u64,
 }
 
+#[derive(Parser)]
+struct CliArgs
+{
+    /// do not actually deduplicate, just report the matches
+    #[arg(short, long, default_value_t = false)]
+    simulate: bool,
+
+    /// the file on which the deduplication should be performed
+    path: std::path::PathBuf,
+}
+
 fn main() -> std::io::Result<()>
 {
+    let args = CliArgs::parse();
+
+
     println!("starting blockdedupe");
 
     let mut array: [u8; 4096] =  [0; 4096];
 
-    let file_path: String = String::from("test");
+    let file_path: String = args.path.into_os_string().into_string().unwrap();
 
     let file = File::open(&file_path)?;
 
@@ -104,9 +119,9 @@ fn main() -> std::io::Result<()>
     while block_number < block_count
     {
         buf_reader.read(&mut array[..])?;
-    
+
         let mut digest = crc.digest();
-    
+
         digest.update(&array);
         let crc_result: u64 = digest.finalize();
         if crc_result != 0
@@ -120,7 +135,7 @@ fn main() -> std::io::Result<()>
             else
             {
                 let hash_old: u64 = hashes[hash_index].crc;
-    
+
                 if hashes[hash_index].block_number_plus_one > 0 && hash_old == crc_result
                 {
                     let block_number_old = hashes[hash_index].block_number_plus_one - 1;
@@ -134,51 +149,54 @@ fn main() -> std::io::Result<()>
 
                         if matchlen >= 16
                         {
-                            let file_src = File::open(&file_path)?;
-                            let src_fd: RawFd = file_src.as_raw_fd();
-                            let file_dest = File::options().write(true).open(&file_path)?;
-                            let dest_fd: RawFd = file_dest.as_raw_fd();
-                            let dest_fd_i64: i64 = dest_fd as i64;
 
-                            let mut dedup_request: dedup = dedup
+                            if !args.simulate
                             {
-                                args: file_dedupe_range
+                                let file_src = File::open(&file_path)?;
+                                let src_fd: RawFd = file_src.as_raw_fd();
+                                let file_dest = File::options().write(true).open(&file_path)?;
+                                let dest_fd: RawFd = file_dest.as_raw_fd();
+                                let dest_fd_i64: i64 = dest_fd as i64;
+
+                                let mut dedup_request: dedup = dedup
                                 {
-                                    src_offset: block_number_old*4096,
-                                    src_length: matchlen*4096,
-                                    dest_count: 1,
-                                    reserved1: 0,
-                                    reserved2: 0,
-                                },
-                                info: file_dedupe_range_info
+                                    args: file_dedupe_range
+                                    {
+                                        src_offset: block_number_old*4096,
+                                        src_length: matchlen*4096,
+                                        dest_count: 1,
+                                        reserved1: 0,
+                                        reserved2: 0,
+                                    },
+                                    info: file_dedupe_range_info
+                                    {
+                                        dest_fd: dest_fd_i64,
+                                        dest_offset: block_number*4096,
+                                        bytes_deduped: 0,
+                                        status: 0,
+                                        reserved: 0,
+                                    },
+                                };
+                                let req = &mut dedup_request;
+
+                                let result: i32;
+                                unsafe
                                 {
-                                    dest_fd: dest_fd_i64,
-                                    dest_offset: block_number*4096,
-                                    bytes_deduped: 0,
-                                    status: 0,
-                                    reserved: 0,
-                                },
-                            };
-
-                            let req = &mut dedup_request;
-
-                            let result: i32;
-                            unsafe
-                            {
-                                result = ioctl(src_fd, FIDEDUPERANGE, req as *mut _);
-                            }
-                            if result != 0
-                            {
-                                let errno_whatever = errno();
-                                let errno_i32: i32 = errno_whatever.0;
-                                println!("dedup error: ({}) {}", errno_i32, errno_whatever);
-                                panic!("aborting");
-                            }
-                            else
-                            {
-                                println!("dedup success!");
-                                println!("bytes_deduped {}", dedup_request.info.bytes_deduped);
-                                println!("status {}", dedup_request.info.status);
+                                    result = ioctl(src_fd, FIDEDUPERANGE, req as *mut _);
+                                }
+                                if result != 0
+                                {
+                                    let errno_whatever = errno();
+                                    let errno_i32: i32 = errno_whatever.0;
+                                    println!("dedup error: ({}) {}", errno_i32, errno_whatever);
+                                    panic!("aborting");
+                                }
+                                else
+                                {
+                                    println!("dedup success!");
+                                    println!("bytes_deduped {}", dedup_request.info.bytes_deduped);
+                                    println!("status {}", dedup_request.info.status);
+                                }
                             }
                         }
                     }
@@ -193,7 +211,6 @@ fn main() -> std::io::Result<()>
     println!("found {} matches for a total of {} matching blocks", matches, total_matchsize);
     Ok(())
 }
-
 
 fn check_match(file_path: &String, block_old: u64, block_new: u64, full_block_count: u64) -> std::io::Result<u64>
 {
