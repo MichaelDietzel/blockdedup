@@ -94,7 +94,7 @@ struct FileInfo
     full_blocks: u64,
 }
 
-fn main() -> std::io::Result<()>
+fn main()
 {
     let args = CliArgs::parse();
 
@@ -122,16 +122,16 @@ fn main() -> std::io::Result<()>
     {
         println!("processing file {} having {} full blocks", file_info.path, file_info.full_blocks);
 
-        let file = File::open(&file_info.path)?;
+        let file = File::open(&file_info.path).unwrap();
         let mut buf_reader = BufReader::new(&file);
 
         let mut block_number: u64 = 0;
         let mut skip_match_check: u64 = 0;
         let block_count: u64 = file_info.full_blocks;
 
-        while block_number <= block_count
+        while block_number < block_count
         {
-            buf_reader.read(&mut buf[..])?;
+            buf_reader.read_exact(&mut buf).unwrap();
 
             let mut digest = crc.digest();
 
@@ -175,7 +175,6 @@ fn main() -> std::io::Result<()>
         }
     }
     println!("found {} matches for a total of {} matching blocks", matches, total_matchsize);
-    Ok(())
 }
 
 
@@ -234,10 +233,10 @@ fn try_dedupe_match(file_path_keep: &String, block_offset_keep: u64, file_path_d
     let mut reader_dedup: BufReader<File> = BufReader::new(file_dedup);
 
     reader_keep.seek(SeekFrom::Start(block_offset_keep * 4096)).unwrap();
-    reader_keep.read(&mut buf_keep[..]).unwrap();
+    reader_keep.read_exact(&mut buf_keep).unwrap();
 
     reader_dedup.seek(SeekFrom::Start(block_offset_dedup * 4096)).unwrap();
-    reader_dedup.read(&mut buf_dedupe[..]).unwrap();
+    reader_dedup.read_exact(&mut buf_dedupe).unwrap();
 
     let crc = Crc::<u64>::new(&CRC_64_ECMA_182);
 
@@ -308,7 +307,7 @@ fn find_matching_blocks_before(keep_equals_dedup: bool, reader_keep: &mut BufRea
     for block_offset in 1..max_blocks_before
     {
         reader_keep.seek(SeekFrom::Start((block_offset_keep - block_offset) * 4096)).unwrap();
-        reader_keep.read(&mut buf_keep[..]).unwrap();
+        reader_keep.read_exact(&mut buf_keep).unwrap();
 
         let mut digest = crc.digest();
         digest.update(&buf_keep);
@@ -319,7 +318,7 @@ fn find_matching_blocks_before(keep_equals_dedup: bool, reader_keep: &mut BufRea
         }
 
         reader_dedup.seek(SeekFrom::Start((block_offset_dedup - block_offset) * 4096)).unwrap();
-        reader_dedup.read(&mut buf_dedupe[..]).unwrap();
+        reader_dedup.read_exact(&mut buf_dedupe).unwrap();
 
         if buf_keep != buf_dedupe
         {
@@ -363,7 +362,7 @@ fn find_matching_blocks_behind(keep_equals_dedup: bool, reader_keep: &mut BufRea
 
     for block_offset in 1..max_blocks_behind
     {
-        reader_keep.read(&mut buf_keep[..]).unwrap();
+        reader_keep.read_exact(&mut buf_keep).unwrap();
 
         let mut digest = crc.digest();
         digest.update(&buf_keep);
@@ -373,7 +372,7 @@ fn find_matching_blocks_behind(keep_equals_dedup: bool, reader_keep: &mut BufRea
             return block_offset - 1;
         }
 
-        reader_dedup.read(&mut buf_dedup[..]).unwrap();
+        reader_dedup.read_exact(&mut buf_dedup).unwrap();
 
         if buf_keep != buf_dedup
         {
