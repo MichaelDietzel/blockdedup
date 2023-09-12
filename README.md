@@ -1,13 +1,13 @@
 # blockdedupe
 
-## What does it do?
+## What does Blockdedupe do?
 Blockdedupe does block-aligned deduplication on XFS and other file systems supporting the FIDEDUPERANGE ioctl.
 
 Blockdedupe parses all files in a given directory and creates checksums for 4kiB-aligned blocks. Then starting from these blocks it checks in both directions for the longes possible duplicate. If there is one of at least 64kiB length (to reduce fragmentation) it is deduplicated. The checks for duplicates are done on the real data and not only on the checksums. Also the kernel repeats that check when using the FIDEDUPERANGE ioctl.
 Blocks that do contain only zeros are skipped, as I prefer `fallocate -v --dig-holes <file_name>` for handling them.
 
 ## What is data deduplication?
-Deduplication is pretty much like reflink-copying data. Identical data blocks that are used in completely different files are just present once on the underlying storage. The file system keeps track of this in its metadata so it can do copy on write when writing to such a block. That way writing to one file doesn't change other ones sharing the same data. Obviously the space savings for this block are gone when that happens.
+Deduplication can safe a lot of space if you have a lot of redundant data. It is pretty much like reflink-copying data, but it also works only partially identical files. After you run Blockdedupe, appropriate identical data blocks that are used in completely different files are just present once on the underlying storage. The file system keeps track of this in its metadata so it can do copy on write when writing to such a block. That way writing to one file doesn't change other ones sharing the same data. Obviously the space savings for this block are gone when that happens.
 
 As this is a process that only affects big blocks of data globally, local reduncancies in the data are left untouched. This means that additional traditional file system compression can be combined with deduplication to get even more space savings. Just make sure to do the compression below the deduplication, otherwise the deduplication will not be able to find matching data properly.
 
