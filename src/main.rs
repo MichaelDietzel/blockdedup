@@ -27,7 +27,7 @@ use num_format::ToFormattedString;
 use std::os::unix::io::{RawFd, AsRawFd};
 use errno::errno;
 use std::os::raw::{c_int, c_ulong};
-use clap::Parser;
+use argh::FromArgs;
 use num_format::SystemLocale;
 use std::fs;
 
@@ -77,14 +77,16 @@ struct Blockinfo
     file_index: usize,
 }
 
-#[derive(Parser)]
+#[derive(FromArgs)]
+/// block based deduplication
 struct CliArgs
 {
     /// do not actually deduplicate, just report the matches
-    #[arg(short, long, default_value_t = false)]
+    #[argh(switch, short = 's')]
     simulate: bool,
 
     /// the file on which the deduplication should be performed
+    #[argh(positional, greedy)]
     path: std::path::PathBuf,
 }
 
@@ -96,7 +98,7 @@ struct FileInfo
 
 fn main()
 {
-    let args = CliArgs::parse();
+    let args: CliArgs = argh::from_env();
 
     println!("starting blockdedupe");
 
