@@ -100,7 +100,7 @@ fn main()
 {
     let args: CliArgs = argh::from_env();
 
-    println!("starting blockdedupe");
+    println!("starting blockdedup");
 
     let locale = SystemLocale::default().unwrap();
 
