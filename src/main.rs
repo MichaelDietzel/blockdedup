@@ -30,6 +30,7 @@ use std::os::raw::{c_int, c_ulong};
 use argh::FromArgs;
 use num_format::SystemLocale;
 use std::fs;
+use indicatif::{ProgressBar, ProgressStyle};
 
 #[allow(non_camel_case_types)]
 #[repr(C)]
@@ -185,12 +186,19 @@ fn build_file_list(path: std::path::PathBuf) -> (Vec<FileInfo>, u64)
     let mut file_list: Vec<FileInfo> = Vec::new();
     let mut total_full_blocks: u64 = 0;
 
-    total_full_blocks += build_file_list_recurse(path, &mut file_list);
+    let current_file_display = ProgressBar::new(u64::MAX);
+    current_file_display.set_style(ProgressStyle::with_template("Scanning file metadata: {wide_msg} {bytes}").unwrap());
+
+    total_full_blocks += build_file_list_recurse(path, &mut file_list, &current_file_display);
+
+    current_file_display.set_message("done");
+    current_file_display.inc(0);
+    current_file_display.finish();
 
     return (file_list, total_full_blocks);
 }
 
-fn build_file_list_recurse(path: std::path::PathBuf, file_list: &mut Vec<FileInfo>) -> u64
+fn build_file_list_recurse(path: std::path::PathBuf, file_list: &mut Vec<FileInfo>, current_file_display: &ProgressBar) -> u64
 {
     let path_string: String = path.into_os_string().into_string().unwrap();
 
@@ -198,7 +206,10 @@ fn build_file_list_recurse(path: std::path::PathBuf, file_list: &mut Vec<FileInf
 
     if metadata.file_type().is_file()
     {
+        let display_path: String = String::from(&path_string);
         let full_blocks = metadata.len() / 4096;
+        current_file_display.set_message(display_path);
+        current_file_display.inc(full_blocks * 4096);
         if full_blocks == 0
         {
             return 0;
@@ -214,7 +225,7 @@ fn build_file_list_recurse(path: std::path::PathBuf, file_list: &mut Vec<FileInf
 
     for entry in fs::read_dir(path_string).unwrap()
     {
-        full_blocks += build_file_list_recurse(entry.unwrap().path(), file_list);
+        full_blocks += build_file_list_recurse(entry.unwrap().path(), file_list, &current_file_display);
     }
     return full_blocks;
 }

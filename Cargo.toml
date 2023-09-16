@@ -10,3 +10,4 @@ argh = "0.1.12"
 crc = "3.0"
 errno = "*"
 num-format = { version = "0.4.4", features = ["with-system-locale"] }
+indicatif = "0.17.6"
