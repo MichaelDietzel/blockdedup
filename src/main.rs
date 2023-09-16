@@ -186,13 +186,12 @@ fn build_file_list(path: std::path::PathBuf) -> (Vec<FileInfo>, u64)
     let mut file_list: Vec<FileInfo> = Vec::new();
     let mut total_full_blocks: u64 = 0;
 
-    let current_file_display = ProgressBar::new(u64::MAX);
+    let current_file_display = ProgressBar::new(0);
     current_file_display.set_style(ProgressStyle::with_template("Scanning file metadata: {wide_msg} {bytes}").unwrap());
 
     total_full_blocks += build_file_list_recurse(path, &mut file_list, &current_file_display);
 
     current_file_display.set_message("done");
-    current_file_display.inc(0);
     current_file_display.finish();
 
     return (file_list, total_full_blocks);
@@ -209,6 +208,7 @@ fn build_file_list_recurse(path: std::path::PathBuf, file_list: &mut Vec<FileInf
         let display_path: String = String::from(&path_string);
         let full_blocks = metadata.len() / 4096;
         current_file_display.set_message(display_path);
+        current_file_display.inc_length(full_blocks * 4096);
         current_file_display.inc(full_blocks * 4096);
         if full_blocks == 0
         {
