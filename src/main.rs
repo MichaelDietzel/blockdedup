@@ -201,9 +201,10 @@ fn build_file_list_recurse(path: std::path::PathBuf, file_list: &mut Vec<FileInf
 {
     let path_string: String = path.into_os_string().into_string().unwrap();
 
-    let metadata = fs::metadata(&path_string).unwrap();
+    let metadata = fs::symlink_metadata(&path_string).unwrap();
+    let file_type = metadata.file_type();
 
-    if metadata.file_type().is_file()
+    if file_type.is_file()
     {
         let display_path: String = String::from(&path_string);
         let full_blocks = metadata.len() / 4096;
@@ -221,13 +222,18 @@ fn build_file_list_recurse(path: std::path::PathBuf, file_list: &mut Vec<FileInf
         return full_blocks;
     }
 
-    let mut full_blocks: u64 = 0;
-
-    for entry in fs::read_dir(path_string).unwrap()
+    if file_type.is_dir()
     {
-        full_blocks += build_file_list_recurse(entry.unwrap().path(), file_list, &current_file_display);
+        let mut full_blocks: u64 = 0;
+    
+        for entry in fs::read_dir(path_string).unwrap()
+        {
+            full_blocks += build_file_list_recurse(entry.unwrap().path(), file_list, &current_file_display);
+        }
+        return full_blocks;
     }
-    return full_blocks;
+
+    return 0;
 }
 
 
