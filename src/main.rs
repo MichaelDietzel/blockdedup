@@ -129,7 +129,7 @@ fn main()
         let mut buf_reader = BufReader::new(&file);
 
         let mut block_number: u64 = 0;
-        let mut skip_match_check: u64 = 0;
+        let mut first_allowed_match_block: u64 = 0;
         let block_count: u64 = file_info.full_blocks;
 
         while block_number < block_count
@@ -144,11 +144,7 @@ fn main()
             {
                 let hash_index: usize = usize::try_from(crc_result % block_count).unwrap();
 
-                if skip_match_check > 0
-                {
-                    skip_match_check -= 1;
-                }
-                else
+                if block_number >= first_allowed_match_block
                 {
                     let hash_old: u64 = hashes[hash_index].crc;
 
@@ -160,12 +156,12 @@ fn main()
                         let file_path_keep: &String = &matched_file_info.path;
                         let block_number_keep = matched_block_info.block_number_plus_one - 1;
 
-                        let (matched_blocks, matched_blocks_behind) = try_dedupe_match(file_path_keep, block_number_keep, &file_info.path, block_number, args.simulate);
+                        let (matched_blocks, matched_blocks_behind) = try_dedupe_match(file_path_keep, block_number_keep, &file_info.path, block_number, first_allowed_match_block, args.simulate);
                         if matched_blocks > 0
                         {
                             matches += 1;
                             total_matchsize += matched_blocks;
-                            skip_match_check = matched_blocks_behind;
+                            first_allowed_match_block = block_number + matched_blocks_behind + 1; //when the next match is detected and backwards scanning is done, do not match a block again that was already matched at this match.
                         }
                     }
                 }
@@ -237,7 +233,7 @@ fn build_file_list_recurse(path: std::path::PathBuf, file_list: &mut Vec<FileInf
 }
 
 
-fn try_dedupe_match(file_path_keep: &String, block_offset_keep: u64, file_path_dedup: &String, block_offset_dedup: u64, simulate: bool) -> (u64, u64)
+fn try_dedupe_match(file_path_keep: &String, block_offset_keep: u64, file_path_dedup: &String, block_offset_dedup: u64, first_allowed_match_block: u64, simulate: bool) -> (u64, u64)
 {
     let file_keep = File::open(&file_path_keep).unwrap();
     let file_dedup = File::open(&file_path_dedup).unwrap();
@@ -276,7 +272,7 @@ fn try_dedupe_match(file_path_keep: &String, block_offset_keep: u64, file_path_d
         return (0, 0);
     }
 
-    let blocks_before: u64 = find_matching_blocks_before(file_path_keep == file_path_dedup, &mut reader_keep, block_offset_keep, &mut reader_dedup, block_offset_dedup);
+    let blocks_before: u64 = find_matching_blocks_before(file_path_keep == file_path_dedup, &mut reader_keep, block_offset_keep, &mut reader_dedup, block_offset_dedup, first_allowed_match_block);
 
     let full_blocks_keep: u64 = file_size_keep / 4096;
     let full_blocks_dedup: u64 = file_size_dedup / 4096;
@@ -296,7 +292,7 @@ fn try_dedupe_match(file_path_keep: &String, block_offset_keep: u64, file_path_d
 
 }
 
-fn find_matching_blocks_before(keep_equals_dedup: bool, reader_keep: &mut BufReader<File>, block_offset_keep: u64, reader_dedup: &mut BufReader<File>, block_offset_dedup: u64) -> u64
+fn find_matching_blocks_before(keep_equals_dedup: bool, reader_keep: &mut BufReader<File>, block_offset_keep: u64, reader_dedup: &mut BufReader<File>, block_offset_dedup: u64, first_allowed_match_block: u64) -> u64
 {
     let mut buf_keep: [u8; 4096] = [0; 4096];
     let mut buf_dedupe: [u8; 4096] = [0; 4096];
@@ -309,6 +305,11 @@ fn find_matching_blocks_before(keep_equals_dedup: bool, reader_keep: &mut BufRea
     else
     {
         max_blocks_before = block_offset_dedup;
+    }
+    if max_blocks_before > block_offset_dedup - first_allowed_match_block
+    {
+        //this check is done so that going backwards when trying to get a longer match does not overlap the previous match
+        max_blocks_before = block_offset_dedup - first_allowed_match_block;
     }
     if keep_equals_dedup
     {
